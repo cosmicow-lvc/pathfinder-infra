@@ -1,0 +1,15 @@
+[submodule "gateway"]
+	path = gateway
+	url = https://github.com/cosmicow-lvc/pathfinder-bff-gateway
+[submodule "mcp-server"]
+	path = mcp-server
+	url = https://github.com/cosmicow-lvc/pathfinder-mcp-optimizer
+[submodule "ms-auth"]
+	path = ms-auth
+	url = https://github.com/cosmicow-lvc/pathfinder-ms-auth
+[submodule "ms-buses"]
+	path = ms-buses
+	url = https://github.com/cosmicow-lvc/pathfinder-ms-buses
+[submodule "ms-rutas"]
+	path = ms-rutas
+	url = https://github.com/cosmicow-lvc/pathfinder-ms-rutas
