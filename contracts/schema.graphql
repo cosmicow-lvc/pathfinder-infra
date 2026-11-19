@@ -1,0 +1,222 @@
+# ============================================================
+# Schema GraphQL del BFF (contrato entre frontend y bff-gateway)
+# Autenticación: header  Authorization: Bearer <accessToken>
+# Operaciones públicas: register, login, refreshToken
+# El resto requiere token. Las que dicen [ADMIN] requieren rol admin.
+# ============================================================
+
+scalar DateTime   # ISO 8601, ej: 2026-11-19T10:30:00Z
+scalar Time       # HH:mm, ej: 08:30
+
+# ---------- Enums ----------
+
+enum BusStatus {
+  ACTIVO
+  EN_MANTENCION
+  INACTIVO
+}
+
+enum OptimizationCriteria {
+  CHEAPEST
+  FASTEST
+  BALANCED
+}
+
+# ---------- Tipos: Auth (ms-auth) ----------
+
+type Role {
+  id: ID!
+  nombre: String!
+  descripcion: String
+}
+
+type User {
+  id: ID!
+  email: String!
+  nombre: String!
+  activo: Boolean!
+  roles: [Role!]!
+  createdAt: DateTime!
+}
+
+type AuthPayload {
+  accessToken: String!
+  refreshToken: String
+  expiresAt: DateTime!
+  user: User!
+}
+
+# ---------- Tipos: Rutas (ms-rutas) ----------
+
+type City {
+  id: ID!
+  nombre: String!
+  pais: String!
+  region: String!
+}
+
+type Ruta {
+  id: ID!
+  inicio: City!
+  destino: City!
+}
+
+# Travel combina datos de Rutas y Buses: el BFF resuelve "bus" llamando a ms-buses
+type Travel {
+  id: ID!
+  ruta: Ruta!
+  bus: Bus!
+  costo: Int!
+  divisa: String!
+  duracionMinutos: Int!
+  horaSalida: Time!
+  diasOperacion: [Int!]!
+  activo: Boolean!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+# ---------- Tipos: Buses (ms-buses) ----------
+
+type Driver {
+  id: ID!
+  nombre: String!
+  telefono: String!
+  rut: String!
+  activo: Boolean!
+}
+
+type Bus {
+  id: ID!
+  patente: String!
+  empresa: String!
+  estado: BusStatus!
+  driver: Driver!
+  updatedAt: DateTime!
+}
+
+# ---------- Tipos: Optimización (mcp-optimizer) ----------
+
+type OptimizationResult {
+  recommended: Travel!
+  justificacion: String!
+  alternativas: [Travel!]!
+}
+
+# ---------- Inputs ----------
+
+input RegisterInput {
+  email: String!
+  nombre: String!
+  password: String!
+}
+
+input LoginInput {
+  email: String!
+  password: String!
+}
+
+input CityInput {
+  nombre: String!
+  pais: String!
+  region: String!
+}
+
+input RutaInput {
+  inicioId: ID!
+  destinoId: ID!
+}
+
+input DriverInput {
+  nombre: String!
+  telefono: String!
+  rut: String!
+}
+
+input BusInput {
+  patente: String!
+  empresa: String!
+  driverId: ID!
+}
+
+input CreateTravelInput {
+  rutaId: ID!
+  busId: ID!
+  costo: Int!
+  divisa: String!
+  duracionMinutos: Int!
+  horaSalida: Time!
+  diasOperacion: [Int!]!
+}
+
+input UpdateTravelInput {
+  costo: Int
+  divisa: String
+  duracionMinutos: Int
+  horaSalida: Time
+  diasOperacion: [Int!]
+  activo: Boolean
+}
+
+input TravelFilter {
+  inicioId: ID
+  destinoId: ID
+  diaOperacion: Int
+  soloActivos: Boolean = true
+}
+
+input OptimizeRouteInput {
+  inicioId: ID!
+  destinoId: ID!
+  criterio: OptimizationCriteria = BALANCED
+}
+
+# ---------- Queries ----------
+
+type Query {
+  me: User!
+  roles: [Role!]!   # [ADMIN]
+
+  cities(pais: String): [City!]!
+  city(id: ID!): City
+
+  rutas(inicioId: ID, destinoId: ID): [Ruta!]!
+  ruta(id: ID!): Ruta
+
+  buses(estado: BusStatus): [Bus!]!
+  bus(id: ID!): Bus
+  drivers: [Driver!]!
+
+  travels(filter: TravelFilter): [Travel!]!
+  travel(id: ID!): Travel
+
+  # Llama al MCP vía REST. Sin efectos sobre los datos.
+  optimizeRoute(input: OptimizeRouteInput!): OptimizationResult!
+}
+
+# ---------- Mutations ----------
+
+type Mutation {
+  # Auth (gRPC -> ms-auth)
+  register(input: RegisterInput!): AuthPayload!
+  login(input: LoginInput!): AuthPayload!
+  refreshToken(refreshToken: String!): AuthPayload!
+  logout: Boolean!
+  assignRole(userId: ID!, roleId: ID!): User!                 # [ADMIN]
+
+  # Ciudades y rutas (Kafka -> ms-rutas)
+  createCity(input: CityInput!): City!                        # [ADMIN]
+  updateCity(id: ID!, input: CityInput!): City!               # [ADMIN]
+  deleteCity(id: ID!): Boolean!                               # [ADMIN]
+  createRuta(input: RutaInput!): Ruta!                        # [ADMIN]
+  deleteRuta(id: ID!): Boolean!                               # [ADMIN]
+
+  # Conductores y buses (Kafka -> ms-buses)
+  createDriver(input: DriverInput!): Driver!                  # [ADMIN]
+  createBus(input: BusInput!): Bus!                           # [ADMIN]
+  changeBusStatus(id: ID!, estado: BusStatus!): Bus!          # [ADMIN] publica bus.status.changed
+
+  # Viajes (Kafka -> ms-rutas, que valida el bus con ms-buses)
+  createTravel(input: CreateTravelInput!): Travel!            # [ADMIN]
+  updateTravel(id: ID!, input: UpdateTravelInput!): Travel!   # [ADMIN]
+}

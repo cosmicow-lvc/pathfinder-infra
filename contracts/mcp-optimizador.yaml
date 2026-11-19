@@ -1,0 +1,263 @@
+openapi: 3.0.3
+info:
+  title: MCP Optimizer API
+  version: 0.1.0
+  description: |
+    Contrato REST entre el BFF (NestJS) y mcp-optimizer (Express).
+
+    **El MCP es una caja negra.** Recibe todos los datos por el body, no accede a ninguna
+    base de datos ni a otros servicios, y devuelve una recomendación. Solo habla con Claude.
+
+    ## Qué hace internamente
+    Arma un prompt con el criterio y los viajes candidatos, y llama a Claude dándole acceso
+    a estas tools (implementadas dentro del MCP):
+
+    | Tool | Entrada | Para qué |
+    |---|---|---|
+    | `filtrar_por_dia_operacion` | `travels`, `dia` (1-7) | Deja solo los viajes que operan ese día |
+    | `comparar_costos` | `travels` | Ordena los viajes de menor a mayor costo |
+    | `comparar_duraciones` | `travels` | Ordena los viajes de menor a mayor duración |
+    | `puntaje_equilibrado` | `travels`, `pesoCosto`, `pesoDuracion` | Calcula un puntaje combinado de costo y duración |
+
+    Para el MVP bastan 2 tools. Las demás son opcionales.
+
+    ## Reglas
+    - Todos los viajes del body deben tener la misma `divisa`. Si no, responde 400.
+    - Un viaje se identifica por su `id`. La respuesta devuelve solo ids; el BFF reconstruye
+      los objetos `Travel` completos para armar el `OptimizationResult` de GraphQL.
+    - Si no hay viajes entre las ciudades, el BFF responde sin llamar al MCP.
+    - Timeout interno hacia Claude: 20 s. Timeout del BFF hacia el MCP: 25 s.
+    - Header `x-correlation-id`: el BFF lo envía y el MCP lo devuelve en la respuesta y en
+      los logs.
+servers:
+  - url: http://localhost:3000
+    description: Local (docker-compose)
+  - url: http://mcp-optimizer:3000
+    description: Kubernetes / red interna
+paths:
+  /optimize:
+    post:
+      operationId: optimizeRoute
+      summary: Recomienda el mejor viaje entre los candidatos
+      parameters:
+        - name: x-correlation-id
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OptimizeRequest'
+            example:
+              criterio: BALANCED
+              diaOperacion: 5
+              inicio:
+                id: "1"
+                nombre: Coquimbo
+                pais: Chile
+                region: Coquimbo
+              destino:
+                id: "2"
+                nombre: Santiago
+                pais: Chile
+                region: Metropolitana
+              travels:
+                - id: "10"
+                  costo: 12000
+                  divisa: CLP
+                  duracionMinutos: 400
+                  horaSalida: "08:30"
+                  diasOperacion: [1, 2, 3, 4, 5]
+                  bus:
+                    id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                    patente: ABCD12
+                    empresa: Buses Norte
+                    estado: ACTIVO
+                - id: "11"
+                  costo: 9000
+                  divisa: CLP
+                  duracionMinutos: 480
+                  horaSalida: "22:00"
+                  diasOperacion: [1, 2, 3, 4, 5, 6, 7]
+                  bus:
+                    id: 1b4e28ba-2fa1-11d2-883f-0016d3cca427
+                    patente: WXYZ98
+                    empresa: Expreso Sur
+                    estado: ACTIVO
+      responses:
+        '200':
+          description: Recomendación generada
+          headers:
+            x-correlation-id:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OptimizeResponse'
+              example:
+                recommendedTravelId: "10"
+                criterioUsado: BALANCED
+                justificacion: >-
+                  El viaje 10 cuesta 3.000 CLP más que el 11, pero dura 80 minutos menos
+                  y sale de día, por lo que ofrece el mejor equilibrio entre precio y tiempo.
+                alternativas: ["11"]
+        '400':
+          description: Body inválido (campos faltantes, lista vacía, divisas mezcladas)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: BAD_REQUEST
+                  message: "Los viajes deben tener la misma divisa"
+                correlationId: e3a1c9d0
+        '502':
+          description: Claude respondió con error o con un resultado inutilizable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Claude tardó más del timeout interno (20 s)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error interno del MCP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /health:
+    get:
+      operationId: health
+      summary: Salud del servicio (probes de Kubernetes)
+      responses:
+        '200':
+          description: El servicio está activo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+components:
+  schemas:
+    OptimizeRequest:
+      type: object
+      required: [inicio, destino, travels]
+      properties:
+        criterio:
+          type: string
+          enum: [CHEAPEST, FASTEST, BALANCED]
+          default: BALANCED
+        diaOperacion:
+          type: integer
+          minimum: 1
+          maximum: 7
+          description: Día de la semana (1 = lunes ... 7 = domingo). Si se omite, no se filtra por día.
+        inicio:
+          $ref: '#/components/schemas/City'
+        destino:
+          $ref: '#/components/schemas/City'
+        travels:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: Viajes candidatos entre `inicio` y `destino`, ya combinados con los datos del bus.
+          items:
+            $ref: '#/components/schemas/TravelCandidate'
+    City:
+      type: object
+      required: [id, nombre]
+      properties:
+        id:
+          type: string
+        nombre:
+          type: string
+        pais:
+          type: string
+        region:
+          type: string
+    TravelCandidate:
+      type: object
+      required: [id, costo, divisa, duracionMinutos, horaSalida, diasOperacion, bus]
+      properties:
+        id:
+          type: string
+        costo:
+          type: integer
+          minimum: 0
+        divisa:
+          type: string
+          example: CLP
+        duracionMinutos:
+          type: integer
+          minimum: 1
+        horaSalida:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          example: "08:30"
+        diasOperacion:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 7
+        bus:
+          $ref: '#/components/schemas/BusInfo'
+    BusInfo:
+      type: object
+      required: [id, patente, empresa, estado]
+      properties:
+        id:
+          type: string
+        patente:
+          type: string
+        empresa:
+          type: string
+        estado:
+          type: string
+          enum: [ACTIVO, EN_MANTENCION, INACTIVO]
+    OptimizeResponse:
+      type: object
+      required: [recommendedTravelId, criterioUsado, justificacion, alternativas]
+      properties:
+        recommendedTravelId:
+          type: string
+          description: Id de uno de los viajes enviados en el request.
+        criterioUsado:
+          type: string
+          enum: [CHEAPEST, FASTEST, BALANCED]
+        justificacion:
+          type: string
+          description: Explicación en español de por qué se eligió ese viaje.
+        alternativas:
+          type: array
+          maxItems: 3
+          description: Ids de otros viajes del request, de mejor a peor. Nunca incluye el recomendado.
+          items:
+            type: string
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [BAD_REQUEST, UPSTREAM_ERROR, TIMEOUT, INTERNAL]
+            message:
+              type: string
+        correlationId:
+          type: string

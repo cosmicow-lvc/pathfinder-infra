@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package auth.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option csharp_namespace = "MsAuth.Grpc";
+
+// ============================================================
+// Contrato gRPC de ms-auth (C#) consumido por el BFF (NestJS).
+//
+// Metadata esperada en cada llamada:
+//   x-correlation-id : id para rastrear la petición entre servicios
+//
+// Errores (códigos de estado gRPC):
+//   ALREADY_EXISTS      -> email ya registrado
+//   UNAUTHENTICATED     -> credenciales inválidas, token inválido o expirado
+//   PERMISSION_DENIED   -> usuario inactivo
+//   NOT_FOUND           -> usuario o rol inexistente
+//   INVALID_ARGUMENT    -> datos mal formados (email inválido, contraseña corta)
+// ============================================================
+
+service AuthService {
+  // Crea un usuario con el rol "user" y devuelve sus tokens.
+  rpc Register (RegisterRequest) returns (AuthResponse);
+
+  // Valida credenciales y crea una sesión.
+  rpc Login (LoginRequest) returns (AuthResponse);
+
+  // Entrega un access token nuevo mientras la sesión siga vigente.
+  rpc RefreshToken (RefreshTokenRequest) returns (AuthResponse);
+
+  // Invalida la sesión asociada al token.
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
+
+  // Lo usa el guard del BFF en cada petición protegida.
+  // Un token inválido NO es un error gRPC: se responde valid = false.
+  rpc ValidateToken (ValidateTokenRequest) returns (ValidateTokenResponse);
+
+  // Solo admin (el BFF verifica el rol antes de llamar).
+  rpc AssignRole (AssignRoleRequest) returns (User);
+
+  // Lista los roles disponibles (para el formulario de asignar rol).
+  rpc ListRoles (ListRolesRequest) returns (ListRolesResponse);
+}
+
+// ---------- Entidades ----------
+
+message Role {
+  int32 id = 1;
+  string nombre = 2;
+  string descripcion = 3;
+}
+
+message User {
+  string id = 1;
+  string email = 2;
+  string nombre = 3;
+  bool activo = 4;
+  repeated Role roles = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+// ---------- Register ----------
+
+message RegisterRequest {
+  string email = 1;
+  string nombre = 2;
+  string password = 3;
+}
+
+// ---------- Login ----------
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+  string user_agent = 3;
+}
+
+// ---------- Respuesta de Register, Login y RefreshToken ----------
+
+message AuthResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  User user = 4;
+}
+
+// ---------- RefreshToken ----------
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+// ---------- Logout ----------
+
+message LogoutRequest {
+  string access_token = 1;
+}
+
+message LogoutResponse {
+  bool success = 1;
+}
+
+// ---------- ValidateToken ----------
+
+message ValidateTokenRequest {
+  string access_token = 1;
+}
+
+message ValidateTokenResponse {
+  bool valid = 1;
+  User user = 2;                                  // solo si valid = true
+  string reason = 3;                              // "expired", "revoked", "malformed"... si valid = false
+}
+
+// ---------- AssignRole ----------
+
+message AssignRoleRequest {
+  string user_id = 1;
+  int32 role_id = 2;
+}
+
+// ---------- ListRoles ----------
+
+message ListRolesRequest {}
+
+message ListRolesResponse {
+  repeated Role roles = 1;
+}
